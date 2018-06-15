@@ -1,0 +1,1117 @@
+---
+title: "Musica (s)oggettivamente"
+output:
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+## Introduzione
+
+Secondo il vocabolario Treccani (http://www.treccani.it/vocabolario/musica/) la musica è:
+
+"L’arte che consiste nell’ideare e nel produrre successioni strutturate di suoni semplici o complessi, ..., per mezzo della voce umana, di strumenti o della combinazione di entrambe queste fonti.
+Da un punto di vista storico e antropologico, pur in maniera diversa da popolo a popolo, la musica si manifesta come forma di espressione culturale normalmente integrata con le varie attività sociali, concorrendo al collegamento fra conoscenza ed espressione, alla coesione sociale ed etnica, nonché alla trasmissione culturale."
+
+Quindi la musica è un'arte che pervade la nostra società e ne riflette quindi alcuni aspetti.
+
+Il più delle volte la musica e valutazioni a riguardo sono trattate da un punto di vista soggettivo, con questo progetto si vuole condurre un'analisi riguardo la musica attraverso l'applicazione di varie tecniche oggettive sulle canzoni, considerando sia metadati relativi all'audio e alla canzone sia il testo.
+
+In particolare risulta interessante scoprire l'andamento e l'eventuale variazione nel corso del tempo delle canzoni.
+Inoltre si vuole studiare il contenuto del testo delle canzoni sia per caratterizzarle dal punto di vista linguistico sia per determinare i sentimenti che vengono espressi.
+
+---
+
+## Dataset
+
+Per poter dare una risposta alle domande sopra citate sono stati usati alcuni dataset recuperati online ed un altro dataset creato da zero.
+
+I dataset recuperati online sono i seguenti:
+
+* **Million Song Subset** (http://static.echonest.com/millionsongsubset_full.tar.gz)
+    + si tratta di un sottoinsieme del _Million Song Dataset_ [@bertin2011million] (il più grande dataset di canzoni, usato come riferimento per varie ricerche)
+    + contiene audio features e metadata di 10000 canzoni contemporanee
+* **musiXmatch Dataset** (http://labrosa.ee.columbia.edu/millionsong/sites/default/files/AdditionalFiles/mxm_dataset.db)
+    + contiene il testo di una parte delle canzoni del _Million Song Dataset_ in formato bag-of-words
+    + per crearlo è stata usata l'API di musiXmatch e associati i testi alle canzoni corrispondenti
+    + non c'è il testo di tutte le canzoni per alcune restrizioni ad esempio copyrights o per il fatto che alcune canzoni non hanno una parte vocale
+* **last.fm Dataset** (http://labrosa.ee.columbia.edu/millionsong/sites/default/files/lastfm/lastfm_tags.db)
+    + contiene i tag associati alle canzoni del _Million Song Dataset_
+* **Thisismyjam datadump** (https://archive.org/details/thisismyjam-datadump)
+    + Thisismyjam era un sito dove gli utenti potevano indicare le loro canzoni preferite ( _jam_ ), seguire altri utenti e mettere _like_ ai loro _jam_
+    + nel 2015 il servizio è stato chiuso, è stato fatto un dump di tutti i dati per scopi di ricerca [@jansson2015my]
+* **thisismyjam-to-MSD** (http://labrosa.ee.columbia.edu/millionsong/sites/default/files/thisismyjam/jam_to_msd.tsv)
+    + consiste nella mappatura tra i jam e le corrispondenti canzoni nel _Million Song Dataset_
+
+Il dataset creato da zero è stato costruito usando:
+
+* **Articolo su Today** (http://www.today.it/media/sanremo-2018/sanremo-tutti-i-vincitori-dal-1951-a-oggi.html)
+    + articolo sul sito www.today.it (testata editoriale del gruppo Citynews con notizie di cronaca, politica, gossip sia italiane che del mondo) con lista delle canzoni vincitrici del festival di Sanremo
+* **Genius API** (https://genius.com/developers)
+    + è possibile scaricare dati relativi alle canzoni, compreso il testo, presenti sul sito Genius
+* **Anglolo testi** (http://www.angolotesti.it/)
+    + sito con testi di varie canzoni
+* **Spotify Web API** (https://developer.spotify.com/documentation/web-api/)
+    + si possono recuperare dati di cantanti, album, e canzoni presenti nel catologo di Spotify
+    
+---
+
+## Preparazione dei dati
+
+Serve scaricare il _Million Song Subset_ e scaricare il _musiXmatch Dataset_ che ha il testo delle canzoni come bag of words.
+
+Il _Million Song Subset_ è in formato hf5 invece il _musiXmatch Dataset_ in un database sqlite. Quindi è meglio mettere tutto in un unico database principale, perciò va convertito il _Million Song Subset_ in un file csv per poi unire i dati allo stesso database del _musiXmatch Dataset_.
+
+Per convertire il dataset da hf5 a csv ho scritto un codice in python ( _hdf5\_to\_csv.py_ ) perché con R ci sono dei problemi riguardo il formato hf5, come segnalato sul sito di riferimento del _Million Song Subset_:
+
+"We planned to release a R wrapper and looked at the default HDF5 library for R on Ubuntu. Unfortunately, it crashes on empty arrays. This happens when a track has no musicbrainz tag, for instance. If any R specialist is willing to help us with this, please contact us!"
+
+Serve scaricare il _last.fm Dataset_ che ha i dati riguardo i tag di ciascuna canzone.
+
+Si tratta di un database sqlite, quindi si copiano i dati nel database principale.
+
+Ci sono 3 tabelle: una tabella di legame (tid_tag) che contiene i ROWID della canzone e del tag collegati e le altre due contengono una l'id della canzone e l'altra il tag.
+Si usa una query select con due join in modo da avere per ogni record l'id della canzone, il tag e la confidenze. Ci sono molti record, quindi si esegue la query a blocchi.
+
+Serve scaricare il _Thisismyjam datadump_ che ha i dati riguardo i jam creati dagli utenti per le canzoni ed i like che gli utenti hanno dato.
+I dati sono in file di testo in formato tsv, si legge un file di testo alla volta per creare una tabella nel database principale.
+
+I jam si riferiscono ad una canzone tramite un id che non combacia con quello usato nel _Million Song Subset_, per questo motivo si usa _thisismyjam-to-MSD_ che è un file tsv con la mappatura corretta.
+
+Per riuscire a comprendere meglio alcuni aspetti relativi al testo delle canzoni si è creato un dataset da zero, in modo da avere il testo completo delle canzoni e non in formato bag of words.
+
+Avendo in un file tsv tutte le canzoni vincitrici del festival di Sanremo dal 1962 al 2018 recuperate dall' _Articolo su Today_ si scaricano i testi di ciascuna cazone utilizzando la _Genius API_.
+Per alcune canzoni non ci sono i testi sull'api di Genius, quindi i testi delle canzoni mancanti sono stati scaricati dal sito _Anglolo testi_.
+In questo modo si ha un dataset che ha il titolo, l'anno, i cantanti ed il testo delle canzoni vincitrici di Sanremo.
+Si considerano anche altre features delle canzoni utilizzando _Spotify Web API_.
+Per poter ottenere le feature delle canzoni occorre sapere il loro identificativo su Spotify. Su Spotify ci sono varie playlist che raccolgono più canzoni e si può ottenere l'identificativo di tutte le canzoni appartenenti alla playlist usando l'api, a patto di sapere l'identtificativo della playlist e dell'utente che l'ha creata.
+Cercando su _google_ "sanremo all winners spotify" il primo risultato ottenuto è "https://open.spotify.com/user/1138907986/playlist/6H1azszUVaSFoV99Dqi2pI": quindi assumendo che questo risultato si riferisce ad una playlist Spotify con tutte le canzoni vincitrici di Sanremo e che l'identificativo dell'utente è _1138907986_ e l'identificativo della playlist è _6H1azszUVaSFoV99Dqi2pI_, si procede ad interrogare il servizio api con questi input.
+I dati scaricati dall'api di Spotify sono coerenti; tuttavia i titoli e gli artisti delle canzoni sono scritti in un modo leggermente diverso rispetto ai titoli usati nel dataset.
+Quindi per integrare questi altri dati nel dataset si fa un matching tra le stringhe dei titoli e degli artisti e le ambiguità che rimangono vengono risolte "a mano".
+
+---
+
+## Analisi esplorativa sui dati delle canzoni
+
+Risulta che più del 50% di canzoni ha il valore 0 per il campo _year_, cioè per queste canzoni non si ha il dato relativo all'anno.
+Considerando solo le canzoni con il dato sull'anno (in totale 4680) si possono raggruppare le canzoni per decennio, ad esempio una canzone del 1986 appartiene al decennio 1980-1990.
+La distribuzione del numero di canzoni per decennio è la seguente:
+
+```{r}
+set.seed(1234)
+library(dplyr,warn.conflicts = FALSE, quietly=TRUE)
+library(dbplyr,warn.conflicts = FALSE, quietly=TRUE)
+library(RSQLite,warn.conflicts = FALSE, quietly=TRUE)
+library(ggplot2,warn.conflicts = FALSE, quietly=TRUE)
+library(plotly,warn.conflicts = FALSE, quietly=TRUE)
+
+dbCon <- dbConnect(RSQLite::SQLite(), "data/mxm_dataset.db")
+songs<-tbl(dbCon,"songs")
+# esegui la query con dplyr, conta il numero di canzoni per ogni decennio
+songsByGroup<-songs %>% filter(decade!=0) %>% 
+  group_by(decade) %>%
+  summarise(count = n()) %>% 
+  collect()
+  
+p<-ggplot(songsByGroup,aes(x=decade+5,y=count))+ # aggiungi 5 anni in modo da centrare i valori in mezzo al decennio
+  geom_col()+
+  xlab("decennio")+ylab("numero di canzoni")+scale_x_continuous(breaks=seq(1920,2020,10), minor_breaks = seq(1920,2020,10))
+suppressMessages(ggplotly(p))
+```
+
+Si può notare che la maggior parte delle canzoni, di cui si sa l'anno, è distribuita soprattutto attorno al 2000.
+
+Le canzoni più vecchie appartengono al decennio 1920-1930 e sono:
+
+```{r}
+library(DT,warn.conflicts = FALSE, quietly=TRUE)
+datatable(songs %>% filter(year>0)  %>% collect %>% top_n(1,-year) %>% select(anno=year,titolo=title,cantante=artist_name), options=list(paging=F,searching=F,info=F), rownames = F)
+```
+
+Analizzando i metadati associati alle canzoni si osserva che ci sono dei valori di correlazione non trascurabili tra alcune variabili.
+
+_artist familiarity_ è un indicazione su quanto è conosciuto l'artista ed è strettamente correlata con _artist hotness_ che esprime quanto interessante è l'artista secondo il pubblico.
+Inoltre c'è anche una certa correlazione con _song hotness_ che indica quanto interessante è la canzone secondo il pubblico.
+
+La maggior parte delle canzoni si riferisce a posizioni geografiche con latitudine positiva, quindi l'emisfero nord, inoltre ci sono due gruppi molto concentrati attorno ai valori di longitudine 0 e -100, approssimativamente Europa e Stati Uniti.
+
+Sembra che le canzoni con una posizione nell'emisfero sud,  _latitudine_<0, hanno stesso valore di _artist hotness_ (circa 0.5) e per _longitudine_>0 stessa situazione (quindi è possibile avere valori estremi di _artist hotness_ principalmente negli Stati Uniti).
+
+All' aumentare degli anni ci sono canzoni con valori di _loudness_ sempre più elevati, il che significa che ci sono canzoni con rumorosità sempre più alta.
+Questo aspetto riflette la tendenza dell'industria musicale a registrare, produrre e diffondere musica, anno dopo anno, con livelli di volume progressivamente più alti, per creare un suono che superi in volume i concorrenti e le registrazioni dell'anno precedente (la cosiddetta **Loudness war**).
+
+Inoltre all'aumentare degli anni accade che anche la durata della canzone aumenta, anche se in modo meno evidente.
+
+```{r, fig.width=10, fig.height=8}
+data_sub<-songs %>%  select(artist_familiarity,artist_hotttnesss,artist_latitude,artist_longitude,song_hotttnesss,duration,loudness,year) %>% collect()
+
+
+pairs(data_sub %>% filter(year>0), labels=c("artist familiarity","artist hotness","latitudine","longitudine","song hotness","durata","loudness","anno"))
+
+```
+
+
+
+
+Si può analizzare meglio la correlazione tra _artist hotness_, _artist familiarity_ e _song hotness_ rappresentando in uno scatter plot le varie canzoni che hanno i valori di _song hotness_.
+Sull'asse x si usa _artist familiarity_, sull'asse y si usa _artist hotness_ ed i punti sono colorati in base al valore di _song hotness_: i punti più chiari rappresentano canzoni con un grande valore di _song hotness_, viceversa i punti più scuri rappresentano canzoni con un piccolo valore di _song hotness_.
+
+```{r}
+p<-ggplot(data_sub %>% filter(!is.na(song_hotttnesss)),aes(x=artist_familiarity,y=artist_hotttnesss,color=song_hotttnesss))+
+  geom_point()+
+  labs(x = "artist familiarity", y = "artist hotness", color = "song hotness\n")
+suppressMessages(ggplotly(p))
+```
+
+Ci sono alcune canzoni che hanno valori nulli per _artist familiarity_ e _artist hotness_, per le altre canzoni si nota chiaramente che all'aumentare di _artist familiarity_ anche _artist hottness_ aumenta in modo praticamente lineare.
+Inoltre le canzoni che hanno grandi valori per _song hotness_ hanno anche grandi valori per le altre due variabili.
+Questo significa che se un artista è poco conosciuto è anche poco "appetibile" mentre se è molto conosciuto molto probabilmente le sue canzoni risulteranno molto interessanti al pubblico.
+Tuttavia ci sono dei casi in cui un cantante è poco conosciuto ma la sua canzone ha generato un grande interesse nel pubblico e viceversa, in alcuni casi cantanti famosi hanno avuto canzoni che non hanno fatto successo.
+
+
+Riguardo l'argomento **Loudness war** risulta che quando si mettono a confronto due registrazioni con livelli differenti, è probabile che quella dal volume più alto venga considerata anche quella che suona meglio, inoltre le canzoni con volumi più alti attirano magiormente l'attenzione.
+Nei grafici seguenti si evidenziano meglio queste osservazioni confrontando il valore di rumorosità delle canzoni con l'anno corrispondente e il valore di gradimento da parte del pubblico.
+
+```{r}
+library(tidyr,warn.conflicts = FALSE, quietly=TRUE)
+p<-data_sub %>% filter(year>0&song_hotttnesss>0) %>%  select(loudness,song_hotttnesss,year) %>% gather(aspect,value,-loudness) %>% mutate(aspect=factor(aspect,levels=c("year","song_hotttnesss"))) %>% 
+ggplot(aes(y=loudness,x=value))+
+  geom_point()+geom_smooth(method = "lm")+
+  facet_wrap(~aspect, scales = "free",labeller = as_labeller(c("year"="anno","song_hotttnesss"="song hotness")))+
+  labs(y = "loudness",x="")
+suppressMessages(ggplotly(p))
+```
+
+Appare evidente il fatto che con il passare degli anni la maggioranza delle canzoni ha livelli di rumorosità sempre più elevati e che le canzoni più gradite sono generalmente quelle con volumi più alti.
+
+Le osservazioni fatte riguardo la posizione geografica dell'artista verranno qui di seguito approfondite e confermate.
+In questa mappa del mondo sono state rappresentate le canzoni sotto forma di punti colorati in base all'interesse attribuito alla canzone da parte del pubblico.
+
+```{r,fig.width=10}
+library(ggmap,warn.conflicts = FALSE, quietly=TRUE)
+library(maps,warn.conflicts = FALSE, quietly=TRUE)
+library(mapdata,warn.conflicts = FALSE, quietly=TRUE)
+world_data <- map_data("world") # dati per la mappa di tutto il mondo centrata nell'oceano pacifico
+
+data_sub<-songs %>% group_by(artist_id,artist_latitude,artist_longitude) %>% summarise(artist_hotttnesss=mean(artist_hotttnesss),song_hotttnesss=mean(song_hotttnesss),min_year=min(year)) %>% collect
+
+
+p<-ggplot() + geom_polygon(data = world_data, aes(x=long, y = lat, group = group)) + 
+  coord_fixed(1.3)+
+  geom_point(data=data_sub %>% filter(!is.na(song_hotttnesss)),aes(x=artist_longitude,y=artist_latitude,color=song_hotttnesss))+
+  labs(x = "latitudine", y = "longitudine",color="song hotness\n")
+suppressMessages(ggplotly(p))
+```
+
+La maggior parte di canzoni è associata a cantanti negli Stati Uniti e poi in Europa.
+
+C'è una grande concetrazione di canzoni che proviene dagli Stati Uniti e dall'Europa, la gran parte delle canzoni è attribuita ad una di queste due aree.
+
+Osservando le canzoni più vecchie si nota che anche loro appartengono a queste aree.
+
+Ecco il grafico con la mappa del mondo e sovrapposti i punti che corrispondono alle canzoni più vecchie.
+
+```{r,fig.width=10}
+p<-ggplot() + geom_polygon(data = world_data, aes(x=long, y = lat, group = group)) + 
+  coord_fixed(1.3)+
+  geom_point(data=data_sub %>% filter(min_year>0) %>% ungroup %>%  top_n(100,-min_year),aes(x=artist_longitude,y=artist_latitude,color=min_year))+
+  labs(x = "latitudine", y = "longitudine",color="song hotness\n")
+suppressMessages(ggplotly(p))
+```
+
+Le canzoni più vecchie e più recenti che non appartengono al gruppo di canzoni dell'Europa e Stati Uniti sono:
+
+```{r}
+not_us_eu<-songs %>%filter(year>0) %>%  filter(artist_latitude<10|(artist_longitude>-20&artist_latitude<30)|artist_longitude< -150|artist_longitude > 50) %>% collect
+
+not_us_eu<-not_us_eu%>%  top_n(3,year) %>% rbind(not_us_eu %>% top_n(3,-year))
+
+not_us_eu %>% select(cantante=artist_name,anno=year,titolo=title,longitudine=artist_longitude,latitudine=artist_latitude) %>% arrange(longitudine) %>%collect %>% datatable(options(list(paging=F,searching=F,info=F)), rownames = F)
+```
+
+---
+
+## Analisi sul testo delle canzoni
+
+Si considera oltre ai dati sulle canzoni anche il testo corrispondente; non si ha il testo per tutte le canzoni, in ogni caso le osservazioni fatte considerando tutte le canzoni sono state verificate anche su questo sottoinsieme e rimangono valide.
+
+
+Per la maggior parte dei casi le canzoni sono costituite da un numero totale di parole che varia tra 140 e 290, mentre il numero di parole diverse che vengono usate è compreso tra 60 e 100; infatti il valore di diversità delle canzoni, ossia il rapporto tra il numero di parole diverse ed il numero totale di parole, è solitamente tra 0.31 e 0.49.
+(I valori per gli intervalli sono calcolati in base al primo e terzo quantile della distribuzione dei valori associati alle canzoni)
+
+```{r}
+songs_lyrics<-dbGetQuery(dbCon,'select * from songs join lyrics on songs.track_id=lyrics.track_id')
+songs_lyrics<-songs_lyrics[,unique(colnames(songs_lyrics))]
+# funzioni ausiliarie
+# numero totale di parole, numero di parole diverse, diversità (numero parole diverse/totale parole)
+getWordsCount<-function(songs){
+  return(songs %>% group_by(songId) %>% summarise(total_words=sum(count),different_words=n(),diversity=different_words/total_words))
+}
+
+
+wordsForSong<-songs_lyrics %>% mutate(songId=track_id) %>% getWordsCount
+p<-wordsForSong %>% gather(measure,value,-songId) %>% mutate(measure=factor(measure,levels=c("total_words","different_words","diversity"),labels=c("parole totali","parole diverse","diversità"))) %>% 
+ggplot(aes(x=value))+
+  geom_histogram(bins=30)+
+  facet_wrap(~measure,scales = "free")+
+  labs(x = "valore", y = "numero di canzoni")
+suppressMessages(ggplotly(p))
+# aggiungi le colonne anche al dataframe con tutte le canzoni che hanno il testo
+songs_with_lyrics<-songs %>% inner_join(wordsForSong,by=c("track_id"="songId"),copy=T) %>% collect
+```
+
+Il numero di parole che formano una canzone nel corso del tempo.
+
+```{r}
+p<-songs_with_lyrics%>% filter(decade>0) %>% select(decade,total_words,different_words,diversity) %>% gather(measure,value,-decade) %>%  mutate(measure=factor(measure,levels=c("total_words","different_words","diversity"))) %>% 
+ggplot(aes(x=decade+5,y=value,group=decade+5))+
+  geom_boxplot()+
+  facet_grid(measure~.,scales = "free",labeller = as_labeller(c("total_words"="parole totali","different_words"="parole diverse","diversity"="diversità")))+
+  labs(x = "decennio", y = "valore")+scale_x_continuous(breaks=seq(1920,2020,10), minor_breaks = seq(1920,2020,10))
+suppressMessages(ggplotly(p))  
+```
+
+Il numero di parole che forma una canzone influenza il grado di diversità della canzone ma il valore di _song hotness_ non dipende da queste variabili.
+
+
+```{r}
+library(ggExtra,warn.conflicts = FALSE, quietly=TRUE)
+data<-songs_with_lyrics %>% filter(!is.na(song_hotttnesss))
+p<-ggplot(data,aes(x=diversity,y=total_words,color=song_hotttnesss))+
+  geom_point()+theme(legend.position = "left")+
+  labs(x="diversità",y="parole totali",color="song hotness\n")
+ggMarginal(p,data,type = "histogram")
+```
+
+La maggiorparte delle canzoni ha un piccolo valore di diversità (circa 0.3) e un numero totale di parole attorno a 200.
+Le canzoni con un alto valore di diversità (>0.6) sono composte da poche parole (<150), mentre le altre canzoni hanno come numero totale di parole sia valori piccoli che grandi.
+
+
+Nel seguente grafico sono rappresentate le parole più frequenti con il corrispondente numero di occorrenze.
+
+```{r}
+library(tidytext,warn.conflicts = FALSE, quietly=TRUE)
+library(wordcloud2,warn.conflicts = FALSE, quietly=TRUE)
+words<-songs_lyrics %>%  group_by(word) %>% summarise(count=sum(count))
+
+p<-ggplot(words %>%  top_n(10,count) %>% arrange(desc(count)) %>% mutate(word=factor(word,levels=word)),aes(x=word,y=count))+
+  geom_col()+labs(x="parola",y="occorrenze")
+suppressMessages(ggplotly(p))
+```
+
+Eliminando le stopwords si ha:
+
+```{r}
+# elimina le stop words
+w<-words %>% anti_join(stop_words,by="word") %>% top_n(100,count) %>% mutate(freq=count/sum(count))
+wordcloud2(w)
+```
+
+
+
+Le parole più usate e durature con il passare degli anni sono:
+
+```{r}
+# parole apparse nel corso degli anni
+words<-songs_lyrics %>%  group_by(word,year) %>% summarise(count=sum(count))
+
+# considera il numero di parole totali e canzoni totali per anno, in modo da poter considerare il valore relativo del numero di parole rispetto al numero di parole totali o numero di canzoni totali per anno 
+songs_words_byYear<-songs_lyrics %>%  group_by(year) %>% summarise(total_words=sum(count),total_songs=n_distinct(track_id))
+
+# calcola valore relativo rispetto numero totale di parole per anno
+words<-words %>% inner_join(songs_words_byYear,by="year") %>% mutate(word_words=count/total_words,word_songs=count/total_songs)
+
+# parole rimaste usate nel corso del tempo
+words_during_time<-words %>% filter(nchar(word)>3) %>%  anti_join(stop_words,by="word") %>% group_by(word) %>% summarise(usage=sum(word_songs)) %>% arrange(desc(usage)) %>% top_n(10,usage) %>% mutate(usage=round(usage/sum(usage),digits = 2))
+
+datatable(words_during_time %>% rename(parola=word,utilizzo=usage),options=list(paging=F,searching=F,info=F), rownames = F)
+
+```
+
+Ecco una visualizzazione dell'uso di alcune delle parole più usate nelle canzoni nel corso degli anni.
+
+```{r}
+wordVal<-c("love","babi","night")
+ggplot(words %>% filter(year>1960&word %in% wordVal) %>%mutate(word_songs=word_songs/sum(word_songs)) %>% ungroup %>%  mutate(word=factor(word,levels=wordVal)),aes(x=year,y=word_songs,fill=word))+
+    geom_col(position = "dodge")+
+    facet_grid(word~.,scales = "free")+
+  labs(x="anno",y="utilizzo",fill="parola")
+
+
+```
+
+---
+## Sentiment analysis
+
+Per cercare di estrapolare informazioni riguardo le emozioni espresse in una canzone si applica una sentiment analysis.
+Avendo a disposizione il testo delle canzoni in formato bag of words si può associara a ciascuna parola il sentimento più affine.
+
+Distribuzione nel corso degli anni delle parole positive e negative rispetto al numero totale di parole.
+
+```{r}
+
+songWords<-songs_lyrics %>%  group_by(word) %>% mutate(count=sum(count))
+w<-songWords %>% group_by(year) %>% summarise(totalWords=sum(count),differentWords=n())
+sentimentWords<-get_sentiments("bing")
+songWords<-songWords %>% left_join(sentimentWords,by="word")
+songSentiment<-songWords %>% group_by(year,sentiment)
+songSentimentSummary<-songSentiment %>% summarise(total=sum(count),different=n()) %>% 
+  left_join(w, by = "year") %>%
+  mutate(total = total/totalWords,different=different/differentWords) %>%
+  arrange(desc(year)) %>% filter(year>0 & !is.na(sentiment))
+
+# considera tutte le occorrenze delle parole
+ggplot(songSentimentSummary %>% mutate(sentiment=factor(sentiment,levels=c("negative","positive"),labels=c("negativo","positivo"))),aes(x=year,y=total,fill=sentiment))+
+  geom_col()+labs(x="anno",y="frequenza",fill="sentimento")
+```
+
+Il numero di parole associate a sentimenti positivi sono in numero maggiore rispetto alle parole associate a sentimenti nagativi, inoltre questo vale per praticamente qualsiasi anno.
+
+```{r}
+data<-songSentimentSummary %>% select(year,sentiment,total) %>% spread(sentiment,total)
+data <- data%>% mutate(ratio=positive/negative)
+p<-ggplot(data,aes(x=ratio,y=..density..))+
+  geom_histogram(bins=30)+
+  scale_x_continuous(breaks = seq(0,70,5))+labs(x="rapporto tra il numero di parole positive e negative",y="frequenza")
+suppressMessages(ggplotly(p))
+```
+
+Considerando il numero di parole diverse associate a sentimenti positivi ed il numero di parole diverse associate a sentimenti negativi si ottiene:
+
+
+```{r}
+# considera numero di parole diverse
+ggplot(songSentimentSummary %>% mutate(sentiment=factor(sentiment,levels=c("negative","positive"),labels=c("negativo","positivo"))),aes(x=year,y=different,fill=sentiment))+
+  geom_col()+labs(x="anno",y="frequenza",fill="sentimento")
+```
+
+In questo caso il numero di parole diverse associate a sentimenti positivi è approssimativamente lo stesso delle parole diverse associate a sentimenti negativi.
+
+```{r}
+data<-songSentimentSummary %>% select(year,sentiment,different) %>% spread(sentiment,different)
+data <- data%>% mutate(ratio=positive/negative)
+p<-ggplot(data,aes(x=ratio))+
+  geom_histogram(aes(y=..density..),bins=30)+
+  scale_x_continuous(breaks=(0:8))+labs(x="rapporto tra il numero di diverse parole positive e negative",y="frequenza")
+suppressMessages(ggplotly(p))
+```
+
+Il numero di parole diverse associate a sentimenti positivi è addirittura minore rispetto a quello delle parole diverse associate a sentimenti negativi.
+Questo significa che le canzoni esprimono soprattutto sentimenti positivi però usando poche parole, ripetendole, mentre per esprimere sentimenti negativi si usa un vocabolario più vario, ecco quindi che il numero di parole diverse per esprimere sentimenti negativi è maggiore di quello delle parole diverse che esprimono sentimenti positivi.
+
+
+
+Utilizzando il lexicon _afinn_ si ottiene il valore di positività associato a ciascuna parola, quindi analizza la distribuzione nel corso degli anni del valore di positività delle parole nelle canzoni.
+
+```{r}
+songWords<-songs_lyrics %>%  group_by(word) %>% mutate(count=sum(count))
+w<-songWords %>% group_by(year) %>% summarise(count=sum(count))
+sentimentWords<-get_sentiments("afinn")
+songWords<-songs_lyrics %>% left_join(sentimentWords,by="word")
+songSentiment<-songWords %>%group_by(track_id) %>%  summarise(total_score=sum(score*count,na.rm = T))
+
+# aggiungi colonna con punteggio sentimento al dataframe con tutte le canzoni che hanno il testo
+songs_with_lyrics<-songs_with_lyrics %>% left_join(songSentiment,by="track_id")
+
+p<-ggplot(songs_with_lyrics %>%  filter(year>1930),aes(x=decade+5,y=total_score))+
+  geom_point()+
+  geom_boxplot(aes(group=decade))+
+  labs(x="decennio",y="positività")+scale_x_continuous(breaks=seq(1920,2020,10), minor_breaks = seq(1920,2020,10))
+suppressMessages(ggplotly(p))
+```
+
+---
+
+## Analisi dei tag associati alle canzoni
+
+Con il dataset _last.fm_ si hanno a disposizione vari tag associati alle canzoni dagli utenti.
+Ogni canzone è associata a più tag, ciascuno con un certo grado di confidenza e ci sono più di 33000 tags diversi.
+Di seguito si può visualizzare quanti tag vengono associati solitamente ad una canzone a seconda dell'anno.
+
+```{r}
+songs_tags<-dbGetQuery(dbCon,'select * from song_tag a join songs b on a.tid=b.track_id')
+songsByGroup<-songs_tags %>% filter(year>0) %>% 
+  group_by(year) %>%
+  summarise(count = n(),songs=n_distinct(track_id),val=count/songs) %>% 
+  collect()
+
+p<-ggplot(songsByGroup,aes(x=year,y=val))+
+  geom_col()+labs(x="anno",y="numero di tag medio per canzone")
+suppressMessages(ggplotly(p))
+```
+
+Tanti tag compaiono solo una volta, cioè sono associati a solo una canzone.
+Considerando non solo l'associazione tra i tag e le canzoni ma anche il grado di confidenza, si osserva che i tag usati di più e con maggior grado di confidenza sono la minoranza; la maggior parte di tag risulta essere poco usata, cioè sono tag associati a poche canzoni.
+
+```{r}
+tag_count<-songs_tags %>% group_by(tag) %>% summarise(usage=sum(val)) %>% filter(usage>0) %>% arrange(desc(usage))
+# come è distribuito il numero di apparizioni dei tag? (cioè a quante canzoni è associato un tag, secondo il grado di confidenza)
+p<-ggplot(tag_count,aes(x=usage))+
+  geom_histogram(binwidth = 0.1)+
+  scale_x_log10()+scale_y_log10()+labs(x="uso del tag",y="numero di canzoni associate al tag")
+suppressMessages(ggplotly(p))
+```
+
+Nella seguente word of cloud sono rappresentati i tag più utilizzati mettendo in evidenza i tag che sono maggiormente usati nel corso degli anni.
+
+```{r}
+library(wordcloud,warn.conflicts = FALSE, quietly=TRUE)
+# tag più usati nel corso del tempo, per ogni tag conta in quanti anni è stato usato
+popular_tags_during_time<-songs_tags %>% group_by(tag) %>% summarise(years=n_distinct(year)) %>% top_n(10,years)
+
+data<-tag_count %>% left_join(popular_tags_during_time,by="tag") %>% top_n(30,usage) %>% arrange(usage)
+data[is.na(data$years),"years"]<-0
+data<-data %>% mutate(years=(years-min(years))/(max(years)-min(years)))%>%mutate(years=0.8-years*0.6) %>%  mutate(color=rgb(years,years,years))
+
+wordcloud(data$tag,data$usage,colors =(data$color),ordered.colors=TRUE)
+
+```
+
+Controlla l'andamento dell'uso dei tag più usati nel corso del tempo.
+
+```{r}
+# tag più usati nel corso del tempo, per ogni tag conta in quanti anni è stato usato
+popular_tags_during_time<-songs_tags %>% group_by(tag) %>% summarise(years=n_distinct(year)) %>% arrange(desc(years))
+```
+
+I primi 10 tag più usati ( _top ten_ ) per ciascun anno sono diversi da anno in anno, in totale ci sono più di 700 tag diversi, quindi si considerano solo i 20 tag che appaiono più volte nelle _top ten_ dei diversi anni.
+
+```{r}
+# conta le occorrenze di ciascun tag popolare nel corso del tempo
+tag_count<-songs_tags %>% inner_join(popular_tags_during_time,by="tag") %>% group_by(tag,year) %>% summarise(count=n(),val=sum(val)) %>% arrange(desc(val))
+
+# per ogni anno si prendono i primi tag più usati
+popular_tags_val<-tag_count %>% group_by(year) %>% top_n(10,val)
+# ci sono tanti tag diversi, quindi si considerano quelli che appaiono più volte tra i primi tag nel corso del tempo
+tags<-popular_tags_val %>% group_by(tag) %>% summarise(count=n()) %>% arrange(desc(count)) %>% top_n(20,count)
+
+most_popular_tags<-popular_tags_val %>% filter(tag %in% tags$tag)
+# raggruppa per anno in modo da poter poi calcolare il valore relativo rispetto all'anno
+tagsByYear<-most_popular_tags %>% 
+    filter(year!=0) %>%
+    group_by(year) %>%
+    summarise(val_year = sum(val))
+
+tagsByYearTag<-most_popular_tags %>%
+  filter(year!=0) %>% 
+  group_by(year,tag) %>%
+  summarise(val = sum(val))
+  
+# considera il valore relativo: quindi dividi il valore per la somma dei valori dello stesso anno
+tagsByYearTag<-tagsByYearTag %>% inner_join(tagsByYear,by="year") %>% mutate(val=val/val_year)
+
+p<-ggplot(tagsByYearTag,aes(year,tag))+
+  geom_tile(aes(fill=val))+
+  scale_x_continuous(breaks = seq(1920,2010,5))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+labs(x="  ",y="  ",fill="uso\n")
+
+suppressMessages(ggplotly(p))
+```
+
+Si può notare il pattern abbastanza scontato dei tag _60s_, _70s_, _80s_, _90s_ che sono associati alle canzoni appartenenti allo stesso decennio, anche se ci sono delle canzoni del decennio 1970-1980 associate a _80s_.
+Prima del 1960 le canzoni sono associate principalmente al tag _blues_ (il tag più "vecchio", cioè associato a canzoni con minor anno 1926) e in parte a _country_ (tag apparso dopo il 1935).
+
+I tag più usati negli ultimi anni sono _rock_, (che è un tag usato praticamente ogni anno a partire dal 1964), _pop_ (apparso due anni prima del _rock_ ma per il periodo tra il 1965 e 1985 usato ad "intermittenza") e tag abbastanza recenti (ossia il loro uso è iniziato negli ultimi anni) come _alternative_, _Hip-Hop_, _indie_, _alternative rock_, _female vocalists_ ed _electronic_.
+
+Un altro aspetto interessante da considerare è il periodo in cui è stato usato un tag:
+
+```{r}
+tagsByYearTag %>%  group_by(tag) %>% summarise(inizio=min(year),fine=max(year), durata=fine-inizio) %>% datatable(rownames = F)
+```
+
+I tag relativi al decennio _60s_, _70s_, _80s_ e _90s_ sono associati praticamente solo a canzoni del decennio corrispondente.
+I tag _blues_ e _country_ sono i tag apparsi con le canzoni più vecchie ma risultano non più usati, mentre _electronic_ è uno dei tag più recenti ed è anche tra i tag più usati negli ultimi anni.
+Risulta interessante anche il fatto che il tag _female vocalists_ è tra quelli più usati negli ultimi anni ma è associato a canzoni che risalgono già al 1960.
+
+Combinando insieme i tag associati alle canzoni e i dati ricavati dal testo delle canzoni si osserva la distribuzione del numero di parole in una canzone a seconda del tag a cui è associata la canzone.
+Le canzoni con il tag _Hip-Hop_ sono quelle che solitamente sono composte da un grande numero di parole (più di 500), rispetto le canzoni associate agli altri tag, che sono più o meno formate dallo stesso numero di parole che è attorno a 250.
+Considerando il numero di parole diverse le canzoni con il tag _Hip-Hop_ rimangono separate dalle altre infatti hanno un grande numero di parole diverse (più di 150), rispetto alle altre, che hanno un numero di parole diverse attorno a 75.
+
+```{r}
+#quanti tag diversi ci sono
+#songs_with_lyrics %>% distinct(tag) %>% nrow
+
+tags<-songs_with_lyrics %>% filter(!is.na(first_tag)) %>% group_by(first_tag) %>% summarise(count=n()) %>% arrange(-count) %>% top_n(5,count) %>% select(first_tag)
+
+data<-songs_with_lyrics %>% filter(first_tag %in% tags$first_tag) %>% select(first_tag,total_words,different_words)
+
+p<-data %>% gather(measure,value,-first_tag) %>% mutate(measure=factor(measure, levels=c("total_words","different_words"),labels=c("parole totali","parole diverse"))) %>% 
+ggplot(aes(x=value,fill=first_tag,y=..density..)) +
+  geom_histogram(position="identity",alpha=0.5,bins=30) +
+  facet_wrap(~measure,scales="free")+labs(fill="tag",x="valore",y="frequenza",title="Distribuzione del numero di parole totali e diverse per i tag più usati")
+suppressMessages(ggplotly(p))
+```
+
+In generale i tag associati alle canzoni con il minor numero di parole sono _electronic_, _hardcore_ e _punk_ mentre i tag associati alle canzoni con il maggior numero di parole sono _rap_ ed _Hip-Hop_.
+Le canzoni associate ai tag _classic rock_ e _hard rock_ sono le canzoni più simili tra loro per quanto riguarda il numero di parole che le compongono, il numero di parole delle canzoni di questo gruppo non varia tanto rispetto alle canzoni con altri tag.
+
+```{r}
+data<-songs_with_lyrics %>% filter(!is.na(first_tag)) %>%  group_by(first_tag) %>% summarise(songs=n(),m=round(mean(total_words)),s=round(sd(total_words)),ratio=round(s/m,2)) %>% arrange(ratio) %>% 
+  filter(songs>20) # considera solo tag associati ad almeno un certo numero di canzoni (altrimenti la media e la deviazione standard sono poco significative)
+datatable(data, colnames=c("tag","canzoni","media parole totali","deviazione standard parole totali","variabilità parole totali"),rownames = F)
+```
+
+Le canzoni associate al tag _Hip-Hop_ hanno un grado di negatività molto alto, al contrario le canzoni associate al tag _pop_  hanno un grado di positività molto alto mentre le canzoni associate agli altri tag sono generalmente neutre e in parte sia positive che negative ma con valori più bassi.
+Ecco la distribuzione del sentimento (grado di positività) delle canzoni a seconda del tag a cui sono associate.
+
+```{r}
+songWords<-songs_lyrics %>%  group_by(word) %>% summarise(count=sum(count))
+sentimentWords<-get_sentiments("afinn")
+songWords<-songs_lyrics %>% left_join(sentimentWords,by="word")
+songSentiment<-songWords %>%group_by(track_id) %>%  summarise(total_score=sum(score*count,na.rm = T))
+
+
+tags<-songs_with_lyrics %>% filter(!is.na(first_tag)) %>% group_by(first_tag) %>% summarise(count=n()) %>% arrange(-count) %>% top_n(5,count) %>% select(first_tag)
+
+data<-songs_with_lyrics %>% filter(first_tag %in% tags$first_tag)
+
+p<-ggplot(data,aes(x=total_score,y=..density..,fill=first_tag)) +
+  geom_histogram(position="identity",bins=30,alpha=0.5)+labs(x="positività",fill="tag",y="frequenza",title="Distribuzione del valore di positività delle canzoni associate ai tag più usati")
+suppressMessages(ggplotly(p))
+```
+
+I tag associati alle canzoni con i più grandi valori di sentimento positivo sono _80s_, _pop_ e _classic rock_ mentre i tag associati a canzoni con grandi valori di sentimento negativo sono _rap_, _hardcore_ e _hip-Hop_.
+
+Risulta che i tag _rap_ e _Hip-Hop_ sono simili tra loro sia per quanto riguarda il numero di parole usate nelle canzoni che per il valore di sentimento associato alle parole usato nelle canzoni.
+
+---
+
+## Preferenze degli utenti
+
+Considerando anche le preferenze degli utenti nei confronti delle canzoni, utilizzando i dati relativi al dataset _thisisjam_, si conclude che il numero di jam e like non sembra essere tanto correlato con l'anno e nemmeno con _song hotness_; per quanto riguarda il sentimento della canzone risulta che la maggior parte di like e jam è attribuita a canzoni con un valore neutrale, inoltre allontanandosi da valori neutrali il numero di like diminusice.
+
+```{r}
+# numero di jams
+jams<-dbGetQuery(dbCon,"select songs.track_id as track_id,count() as jams from songs
+join jam_msd on jam_msd.track_id=songs.track_id
+join jams on jams.jam_id= jam_msd.jam_id
+group by songs.track_id")
+songs_with_lyrics<-songs_with_lyrics %>% left_join(jams,by="track_id")
+
+# numero di likes
+jam_likes<-dbGetQuery(dbCon,"select songs.track_id as track_id,count() as likes from songs
+join jam_msd on jam_msd.track_id=songs.track_id
+join jams on jams.jam_id= jam_msd.jam_id
+join likes on likes.user_id=jams.user_id
+group by songs.track_id")
+songs_with_lyrics<-songs_with_lyrics %>% left_join(jam_likes,by="track_id")
+
+data<-songs_with_lyrics %>% select(year,song_hotttnesss,jams,likes,total_score) %>% filter(year>0)
+pairs(data,labels=c("anno","song hotness","jams","likes","positività"))
+```
+
+C'è una canzone con un alto grado di positività che ha anche numerosi like.
+
+```{r}
+songs_with_lyrics %>% filter(!is.na(likes)) %>% top_n(1,total_score) %>% select(anno=year,titolo=title,cantante=artist_name,"positività"=total_score,likes) %>% datatable(options=list(paging=F,searching=F,info=F,ordering=F),rownames=F)
+```
+
+Si tratta di "(This Is Not A) Love Song" (Letteralmente "Questa non è una canzone d'amore"), è un singolo del gruppo post-punk Public Image Ltd. La canzone irride le critiche dei fan e della stampa musicale mosse alla band accusata di star progressivamente "ammorbidendosi" per orientarsi verso sonorità maggiormente commerciali. Il titolo della canzone è ispirata a una strofa della canzone Her Story (1979) dei compagni di etichetta Virgin Flying Lizards, circa i gruppi che si "svendevano" per raggiungere il successo commerciale.
+Il motivo per il quale la canzone ha un alto grado di positività è dovuto al fatto che la parole "love" è molto ripetuta.
+Ecco qui le prime 5 canzoni che ripetono più volte la parola "love", tra le quali c'è anche  "(This Is Not A) Love Song" (in terza posizione):
+
+```{r}
+songs_lyrics %>% filter(word=="love") %>% arrange(-count) %>% inner_join(songs_with_lyrics,by="track_id") %>% select(titolo=title.x,anno=year.x,cantante=artist_name.x,occorrenze= count,"positività"=total_score) %>% top_n(5,occorrenze) %>% mutate(anno=ifelse(anno==0,NA,anno)) %>% datatable(options=list(searching=F,paging=F,info=F),rownames=F)
+```
+
+Queste canzoni hanno anche un grande valore di positività, leggendo il testo di queste canzoni si può confermare che si trattano di canzoni con sentimenti positivi.
+Nonostante la canzone "(This Is Not A) Love Song" neghi il fatto di essere una canzone d'amore, il punteggio riguardo al sentimento è positivo; questo perché, avendo a disposizione il testo della canzone in formato bag of words, non si riesce a riconoscere che la parola "love" è preceduta da una negazione. In ogni caso la canzone non esprime sentimenti negativi.
+
+---
+
+## Analisi sul dataset _Sanremo_
+
+Analizzando il numero di parole usato in ciascuna canzone nel corso degli anni si nota che l'andamento del numero totale di parole che compongono una canzone è crescente ed anche il numero di parole diverse che compaiono in una canzone incrementa con il passare degli anni.
+Tuttavia la crescita del numero totale di parole è maggiore rispetto alla crescita del numero di parole diverse che vengono usate, questo provoca l'abbassamento del valore di diversità delle canzoni nel corso degli anni.
+
+Nel grafico seguente sull'asse x ci sono gli anni, sull'asse y il valore del numero di parole totali e diverse delle canzoni rappresentate con dei punti, la cui dimenzione è proporzionale al valore di diversità.
+
+```{r}
+library(readr,warn.conflicts = FALSE, quietly=TRUE)
+suppressMessages(all_data<-read_tsv("data/sanremo_dataset.tsv"))
+suppressMessages(library(tm,warn.conflicts = FALSE, quietly=TRUE))
+# per evitare problemi elimina gli accenti o strani caratteri dal testo delle canzoni
+all_data$lyrics<-iconv(all_data$lyrics,from="UTF-8",to="ASCII//TRANSLIT")
+# sostituire il carattere ' con spazio
+library(stringr,warn.conflicts = FALSE, quietly=TRUE)
+all_data$lyrics<-str_replace_all(all_data$lyrics,"'"," ")
+
+# spezza il testo in singole parole
+song_tokens<-all_data %>% mutate(lyrics=removePunctuation(lyrics)) %>%  unnest_tokens(word, lyrics) %>% ungroup()
+
+# considera come gruppo l'anno
+# per ogni anno quante parole totali sono apparse e quante parole diverse sono state usate
+songs_words<-song_tokens %>% group_by(anno,word) %>% summarise(count=n())
+songs_words_count<-getWordsCount(songs_words %>% mutate(songId=anno)) %>% arrange(total_words)
+
+
+
+songs_words_count %>% gather(measure,value,total_words,different_words) %>% mutate(measure=factor(measure,levels=c("different_words","total_words"),labels=c("parole diverse","parole totali"))) %>%
+  ggplot(aes(x=songId,y=value,color=measure,group=measure))+
+    geom_point(aes(size=diversity))+geom_smooth(method = "lm")+labs(x="anno",y="",color="misura",size="diversità",title="Numero di parole totali e diverse con il passare degli anni")
+
+
+```
+
+
+Il più basso valore di diversità è 0.28 ed è ottenuto dalla canzone con il titolo "Al di là" del 1961 (29 parole diverse e 102 parole totali) e dalla canzone con il titolo "Solo Noi" del 1980 (87 parole diverse e 306 parole totali).
+
+Il più alto valore di diversità è 0.72 ed è ottenuto dalla canzone con il titolo "Uno per tutte" del 1963 (71 parole diverse e 98 parole totali).
+
+Di seguito c'è l'elenco delle canzoni con il numero di parole totali, il numero di parole diverse ed il valore di diversità.
+
+```{r}
+# considera come gruppo la canzone
+songs_words<-song_tokens %>% group_by(titolo,word) %>% summarise(count=n())
+songs_words_count<-getWordsCount(songs_words %>% mutate(songId=titolo)) %>% arrange(total_words)
+songs<-all_data %>% inner_join(songs_words_count, by=c("titolo"="songId")) %>%select(anno,titolo,cantanti,total_words,different_words,diversity)
+datatable(songs,rownames = F,colnames=c("anno","titolo","cantante","parole totali","parole diverse","diversità"))
+```
+
+Confrontado il numero di parole totali, numero di parole diverse e l'indice di diversità delle canzoni tra i due dataset ( _Million Song Subset_ e _Sanremo_ ) si mette in luce che le canzoni di _Sanremo_ hanno solitamente un numero totale di parole minore rispetto a quelle di _Million Song Subset_ ma un numero di parole diverse maggiore.
+Infatti l'aspetto più rilevante è che le canzoni di _Sanremo_ hanno valori di diversità maggiori rispetto alle canzoni di _Million Song Subset_, rispettivamente [0.44, 0.56] rispetto a [0.31, 0.49] (i valori per gli intervalli sono calcolati in base al primo e terzo quantile della distribuzione dei valori associati alle canzoni).
+
+```{r}
+songs_lyrics<-dbGetQuery(dbCon,'select * from songs join lyrics on songs.track_id=lyrics.track_id')
+songs_lyrics<-songs_lyrics[,unique(colnames(songs_lyrics))]
+# funzioni ausiliarie
+# numero totale di parole, numero di parole diverse, diversità (numero parole diverse/totale parole)
+getWordsCount<-function(songs){
+  return(songs %>% group_by(songId) %>% summarise(total_words=sum(count),different_words=n(),diversity=different_words/total_words))
+}
+
+wordsForSongS<-songs %>% select(songId=titolo,total_words,different_words,diversity)
+wordsForSong<-songs_lyrics %>% mutate(songId=track_id) %>% getWordsCount
+wordsForSongS$dataset<-'sanremo'
+wordsForSong$dataset<-'mss'
+data<- wordsForSongS %>% rbind(wordsForSong) %>% gather(measure,value,total_words,different_words,diversity) %>% mutate(measure=factor(measure,levels=c("total_words","different_words","diversity"),labels=c("parole totali","parole diverse","diversità")))
+
+#  ggplot(data,aes(x=value,fill=dataset,group=dataset))+
+#    geom_histogram(aes(y=..ncount..),bins=30)+
+#    facet_wrap(~measure,scales = "free")
+
+p<-ggplot(data=data %>% filter(dataset=='mss'),aes(x=value,y=..ncount..))+
+    geom_histogram(fill="blue",alpha=0.5,bins=30)+
+  geom_histogram(data=data %>% filter(dataset=='sanremo'),fill="green",alpha=0.5,bins=30)+
+    facet_wrap(~measure,scales = "free")+labs(x="valore",y="frequenza")
+
+suppressMessages(ggplotly(p))
+```
+
+
+Le parole comparse il maggior numero di volte nelle varie canzoni di Sanremo sono: _più_ (135), _amore_ (125), _te_ (108), _solo_ (91) e _me_ (88).
+ _più_, _amore_, _te_ e _me_ sono anche le prime quattro parole che sono state usate nel maggior numero di canzoni, mentre _solo_ si posiziona all'ottavo posto, è al quarto posto come parola più volte ripetuta a causa della canzone dal titolo "Solo noi" in cui appare per 50 volte.
+
+In questa word cloud sono visualizzate tutte le parole che compongono le canzoni vincitrici di Sanremo.
+
+```{r}
+# rimuovi stop words
+stop_words_ita<-data.frame(word=stopwords("it"))
+song_tokens<-song_tokens %>% anti_join(stop_words_ita,by="word")
+# quante volte è stata usata ciascuna parola e in quante canzoni
+words<-song_tokens %>%  group_by(word) %>% summarise(count=n(),songs=length(unique(titolo))) %>% arrange(desc(count))
+
+# in base a quante volte è stata usata una parola
+wordcloud2(words %>% mutate(freq=count/sum(count)))
+```
+
+
+Considerando gli n-grammi composti da 2 a 5 parole si genera un'altra wordcloud.
+Per mettere in luce gli n-grammi più interessanti sono stati eliminati gli n-grammi che contengono più di una stopword o contengono meno di cinque caratteri, inoltre vengono trascurati gli n-grammi che sono apparsi in una sola canzone.
+
+```{r}
+# estrai bigrammi e trigrammi
+bigrams<-all_data %>% mutate(lyrics=removePunctuation(lyrics)) %>%  unnest_tokens(word, lyrics,token="ngrams",n=2) %>% ungroup()
+trigrams<-all_data %>% mutate(lyrics=removePunctuation(lyrics)) %>%  unnest_tokens(word, lyrics,token="ngrams",n=3) %>% ungroup()
+quagrams<-all_data %>% mutate(lyrics=removePunctuation(lyrics)) %>%  unnest_tokens(word, lyrics,token="ngrams",n=4) %>% ungroup()
+cigrams<-all_data %>% mutate(lyrics=removePunctuation(lyrics)) %>%  unnest_tokens(word, lyrics,token="ngrams",n=5) %>% ungroup()
+
+# elimina ngrams che contengono 2 o più stopwords
+# conta quante stopwords sono contenute in ciascun ngram
+bigrams$stopwords<-sapply(bigrams$word,function(word){sum(str_split(word,pattern = " ") %>% unlist%in% stop_words_ita$word)})
+trigrams$stopwords<-sapply(trigrams$word,function(word){sum(str_split(word,pattern = " ") %>% unlist%in% stop_words_ita$word)})
+quagrams$stopwords<-sapply(quagrams$word,function(word){sum(str_split(word,pattern = " ") %>% unlist%in% stop_words_ita$word)})
+cigrams$stopwords<-sapply(cigrams$word,function(word){sum(str_split(word,pattern = " ") %>% unlist%in% stop_words_ita$word)})
+
+# unisci tutto insieme, vanno mantenuti i duplicati quindi usa rbind e non union
+ngrams<-bigrams %>% mutate(n=2)%>% rbind(trigrams %>% mutate(n=3)) %>% rbind(quagrams %>% mutate(n=4)) %>% rbind(cigrams %>% mutate(n=5))
+
+# elimina ngrams con più di 1 stopwords
+ngrams<-ngrams %>% filter(stopwords<2)
+
+words<-ngrams %>%  group_by(word) %>% summarise(count=n(),songs=length(unique(titolo))) %>% arrange(desc(count))
+
+
+# considera ngram usati in almeno due canzoni
+freq_ngrams<-words %>% filter(songs>1)
+# in che canzoni sono usati gli ngram più frequenti
+song_ngrams<-freq_ngrams %>% merge(all_data) %>% mutate(match=str_detect(lyrics,word)) %>% filter(match)
+
+# elimina ngrams con pochi caratteri
+freq_ngrams<-freq_ngrams %>% filter(nchar(word)>5)
+song_ngrams<-freq_ngrams %>% merge(all_data) %>% mutate(match=str_detect(lyrics,word)) %>% filter(match)
+
+
+wordcloud2(song_ngrams %>% mutate(count=songs))
+
+```
+
+---
+
+## Analisi sulle co-occorrenze delle parole
+
+Risulta interessante evidenziare quali sono le parole che sono spesso insieme nelle varie canzoni.
+
+In questo grafico sono rappresentate le 10 parole che sono presenti spesso con la parola _amore_ in molte canzoni, inoltre per ciascuna di esse le 5 parole che sono più spesso presenti insieme a quest'ultime.
+I nodi del grafo rappresentano le varie parole e la loro dimensione è maggiore per le parole che sono usate in tante canzoni; gli archi hanno la larghezza e la trasparenza proporzionali al grado di co-occorrenza tra le parole collegate.
+
+```{r}
+library(Matrix,warn.conflicts = FALSE, quietly=TRUE)
+
+lyrics<-all_data$lyrics %>% tolower
+ds  <- Corpus(VectorSource(lyrics))
+binDTM <- DocumentTermMatrix(ds, control=list(bounds = list(global=c(1, Inf)), weighting = weightBin))
+binDTM <- sparseMatrix(i = binDTM$i, j = binDTM$j, x = binDTM$v, dims = c(binDTM$nrow, binDTM$ncol), dimnames = dimnames(binDTM))
+
+# Matrix multiplication for cooccurrence counts
+coocCounts <- t(binDTM) %*% binDTM
+
+
+cc<-as.matrix(coocCounts)
+```
+
+
+```{r}
+diag(cc)<-0# sulla diagonale si ha il nuero di volte che è comparsa una certa parola
+freq<-sort(cc,decreasing = TRUE)
+
+# quante volte è stata usata ciascuna parola e in quante canzoni
+words<-song_tokens %>%  group_by(word) %>% summarise(count=n(),songs=length(unique(titolo))) %>% arrange(desc(count)) %>% filter(count>10)
+
+
+# elimina parole poco usate
+ic<-which(colnames(cc)%in%words$word)
+cc_s<-cc[ic,ic]
+freq<-order(cc_s,decreasing = TRUE)
+words<-colnames(cc_s)
+
+co_occ<-sapply(freq[1:50],function(x){return(paste(words[floor(x/nrow(cc_s))],words[x%%nrow(cc_s)],sep="-"))})
+
+d<-data.frame(a=co_occ) %>% separate(a,sep = "-",into=c("a","b"))
+l<-(d %>% group_by(a) %>% summarise(count=n())) %>% rename(w=a)
+r<-(d %>% group_by(b) %>% summarise(count=n())) %>% rename(w=b)
+co_occ<-l %>% rbind( r) %>% arrange(desc(count))
+```
+
+
+```{r}
+
+calculateCoocStatistics<-function(coocTerm,binDTM,measure){
+  k <- nrow(binDTM)
+  ki <- sum(binDTM[, coocTerm])
+  kj <- colSums(binDTM)
+  names(kj) <- colnames(binDTM)
+  kij <- coocCounts[coocTerm, ]
+  
+  if(measure=="mutual"){
+  ########## MI: log(k*kij / (ki * kj) ########
+    mutualInformationSig <- log(k * kij / (ki * kj))
+    mutualInformationSig <- mutualInformationSig[order(mutualInformationSig, decreasing = TRUE)]
+    return(mutualInformationSig)
+  }else if (measure=="dice"){
+    ########## DICE: 2 X&Y / X + Y ##############
+    dicesig <- 2 * kij / (ki + kj)
+    dicesig <- dicesig[order(dicesig, decreasing=TRUE)]
+    return(dicesig)
+  }else{
+    ########## Log Likelihood ###################
+    logsig <- 2 * ((k * log(k)) - (ki * log(ki)) - (kj * log(kj)) + (kij * log(kij)) 
+              + (k - ki - kj + kij) * log(k - ki - kj + kij) 
+              + (ki - kij) * log(ki - kij) + (kj - kij) * log(kj - kij) 
+              - (k - ki) * log(k - ki) - (k - kj) * log(k - kj))
+    logsig <- logsig[order(logsig, decreasing=T)]
+    return(logsig)
+  }
+}
+```
+
+```{r}
+coocTerm<-"amore"
+coocs <- calculateCoocStatistics(coocTerm, binDTM, measure="LOGLIK")
+numberOfCoocs<-10
+numberOfCoocs2<-5
+resultGraph <- data.frame(from = character(), to = character(), sig = numeric(0))
+# The structure of the temporary graph object is equal to that of the resultGraph
+tmpGraph <- data.frame(from = character(), to = character(), sig = numeric(0))
+
+# Fill the data.frame to produce the correct number of lines
+tmpGraph[1:numberOfCoocs, 3] <- coocs[1:numberOfCoocs]
+# Entry of the search word into the first column in all lines
+tmpGraph[, 1] <- coocTerm
+# Entry of the co-occurrences into the second column of the respective line
+tmpGraph[, 2] <- names(coocs)[1:numberOfCoocs]
+# Set the significances
+tmpGraph[, 3] <- coocs[1:numberOfCoocs]
+
+# Attach the triples to resultGraph
+resultGraph <- rbind(resultGraph, tmpGraph)
+
+# Iteration over the most significant numberOfCoocs co-occurrences of the search term
+for (i in 1:numberOfCoocs){
+  
+  # Calling up the co-occurrence calculation for term i from the search words co-occurrences
+  newCoocTerm <- names(coocs)[i]
+  coocs2 <- calculateCoocStatistics(newCoocTerm, binDTM, measure="LOGLIK")
+  
+  # Structure of the temporary graph object
+  tmpGraph <- data.frame(from = character(), to = character(), sig = numeric(0))
+  tmpGraph[1:numberOfCoocs2, 3] <- coocs2[1:numberOfCoocs2]
+  tmpGraph[, 1] <- newCoocTerm
+  tmpGraph[, 2] <- names(coocs2)[1:numberOfCoocs2]
+  tmpGraph[, 3] <- coocs2[1:numberOfCoocs2]
+  
+  #Append the result to the result graph
+  resultGraph <- rbind(resultGraph, tmpGraph[2:length(tmpGraph[, 1]), ])
+}
+
+```
+
+
+```{r}
+library(igraph,warn.conflicts = FALSE, quietly=TRUE)
+library(ggraph,warn.conflicts = FALSE, quietly=TRUE)
+
+graphNetwork <- graph_from_data_frame(resultGraph)
+
+
+# dimensione del nodo in base al numero di canzoni in cui si usa la parola corrispondente
+words<-song_tokens %>%  group_by(word) %>% summarise(count=n(),songs=length(unique(titolo))) %>% arrange(desc(count))
+size<-words %>% filter(word %in% V(graphNetwork)$name)
+size<-size[order(match(size$word,V(graphNetwork)$name)),"songs"] %>% unlist
+V(graphNetwork)$size <- size
+
+ggraph(graphNetwork,layout="kk")+
+  geom_edge_link(aes(alpha=sig, width=sig))+
+  geom_node_point(aes(size=size),color="coral")+
+  geom_node_text(aes(label=name),color="#477282") + theme(axis.line=element_blank(),axis.text.x=element_blank(),
+          axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank(),
+          panel.background=element_blank(),panel.border=element_blank(),panel.grid.major=element_blank(),
+          panel.grid.minor=element_blank(),plot.background=element_blank(),legend.position = "none")
+```
+
+---
+
+## Sentiment analysis
+
+Si adotta come lexicon di parole associate al sentimento il lexicon preso da https://github.com/AndreaCirilloAC/TweetIT/tree/master/lexicon/IT.
+Contiene due liste di parole: una per quelle associate a sentimenti positivi ed una per quelle associate a sentimenti negativi.
+Per ogni canzone si contano le occorrenze delle  parole positive e di quelle negative e si associa alla canzone il grado di positività che consiste nella differenza tra il numero di parole positive ed il numero di parole negative.
+
+Si mettono in evidenza le canzoni che hanno tante parole positive e anche tante parole negative, cioè canzoni con un alto grado di _contrasto_, per far questo si calcola il valore del prodotto del punteggio dato dalle parole positive e negative.
+In questo modo le canzoni con sia parole positive che negative hanno valori di _contrasto_ che sono elevati nel caso si usino tante parole legate ad entrambi i tipi di sentimento.
+Nel caso in cui le parole che compongono la canzone sono tutte positive oppure tutte negative allora si ha un valore pari a zero.
+
+```{r}
+suppressMessages(p_words<-read_csv("data/positive.txt",col_names = c("word")))
+p_words$sentiment<-1 # punteggio +1 per parole positive
+suppressMessages(n_words<-read_csv("data/negative.txt",col_names = c("word")))
+n_words$sentiment<--1 # punteggio -1 per parole negative
+
+# unisci tutte le parole
+sentiment_words_2<-p_words %>% rbind(n_words)
+
+song_sentiment<-songs_words %>% inner_join(sentiment_words_2,by="word") %>% group_by(titolo,sentiment) %>% summarise(different_sentiment=n(),total_sentiment=sum(count))
+
+song_contrast<-song_sentiment %>% group_by(titolo) %>% summarise(contrast=-prod(sentiment*total_sentiment))
+
+song_sentiment<-songs_words %>% inner_join(sentiment_words_2,by="word") %>% group_by(titolo) %>% summarise(positivity=sum(sentiment*count,na.rm =T),words=paste(word,collapse=","),sentiment=sum(abs(sentiment*count))) %>% arrange(sentiment)
+
+song_sentiment<-song_sentiment %>% inner_join(song_contrast,by="titolo")
+```
+
+Risulta che maggiore è il valore dell'indicatore _contrasto_ minore è il grado di poitività associato alla canzone.
+
+```{r}
+
+p<-ggplot(song_sentiment,aes(x=contrast,y=positivity))+
+  geom_point()+
+  geom_smooth(method="lm")+
+  geom_text(data=song_sentiment %>% top_n(3,-positivity),aes(label=titolo))+xlim(0,830)+labs(x="contrasto",y="positività")
+suppressMessages(ggplotly(p))
+```
+
+La canzone con il più grande valore di contrasto è "Per tutte le volte che" del 2010, che è anche la canzone con il più basso valore di positività. Una possibile interpretazione della canzone è la seguente: la storia d'amore di un ragazzo che con tutte le contraddizioni della coppia riesce comunque a provare sentimenti d'amore e romanticismo anche se ormai la ragazza sembra sempre più distante.
+
+
+```{r, fig.height=12}
+# ordina i titoli nel grafico in base all'anno
+d<-song_sentiment %>% inner_join(all_data,by="titolo") %>%  group_by(titolo) %>% filter(row_number()== 1 & !is.na(positivity)&contrast>200)
+d$titolo <- factor(d$titolo, levels = d$titolo[order(d$anno)])
+ggplot(d,aes(x=titolo,y=contrast,fill=positivity)) +
+  geom_col()+
+  coord_flip()+labs(x="contrasto")
+
+```
+
+---
+
+## Variazioni nel corso del tempo
+
+Usando le features di Spotify si conferma il fatto che all'aumentare degli anni aumentano i valori di _loudness_.
+Inoltre aumentano anche i valori per _energy_ (esprime il grado di intensità con cui viene percepita la canzone) ed in modo meno evidente anche _danceability_ (indica quanto adatta è la canzone ad essere ballata).
+
+```{r}
+suppressMessages(all_data<-read_tsv("data/sanremo_dataset.tsv"))
+aa<-all_data %>% inner_join(song_sentiment,by="titolo")
+
+p<-aa %>% select(anno,energy,danceability,loudness) %>% mutate(loudness=(loudness-min(loudness))/diff(range(aa$loudness))) %>% gather(measure,value,-anno) %>% 
+ggplot(aes(x=anno,y=value,color=measure))+
+  geom_point()+geom_smooth(method="lm")+labs(y="valore",color="feature")
+suppressMessages(ggplotly(p))
+```
+
+
+Inoltre _track popularity_, che è un valore calcolato principalmente basandosi sul numero di volte che è stata ascoltata la canzone dando più peso agli ascolti più recenti, risulta con valori più alti per le canzoni degli ultimi anni.
+Comunque è da notare che ci sono alcune canzoni recenti poco ascoltate mentre le canzoni con i più bassi valori di positività, anche se non proprio recenti hanno dei valori di _track popularity_ superiori alla media.
+
+```{r}
+p<-aa %>% 
+ggplot(aes(x=anno,y=track_popularity))+
+  geom_point(aes(size=positivity))+geom_smooth(method="lm")+geom_text(data=aa %>% top_n(3,-positivity),aes(label=titolo),color="#477282")+xlim(c(1950,2021))+labs(y="track popularity")
+suppressMessages(ggplotly(p))
+```
+
+
+---
+
+## Topic modelling
+
+Le canzoni di Sanremo esprimono generalmente sentimenti positivi e la maggior parte utilizza la parola _amore_.
+Si può notare che le varie canzoni sono abbastanza analoghe in termini di argomenti: il tema centrale è l'amore e non ci sono tante variazioni riguardo gli argomenti trattati.
+
+```{r}
+library(topicmodels)
+
+songs_words<-song_tokens %>% group_by(titolo,word) %>% summarise(count=n()) %>% filter(nchar(word)>3)
+ss<-songs_words %>%   cast_dtm(titolo, word, count)
+
+ap_lda <- LDA(ss, k = 2, control = list(seed = 1234))
+
+ap_topics <- tidy(ap_lda, matrix = "beta")
+
+ap_top_terms <- ap_topics %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+ap_top_terms %>%
+  mutate(term = reorder(term, beta)) %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip()+labs(y="parola")
+
+
+```
+
+Suddividendo le canzoni secondo due topic usando la tecnica lda (latent Dirichlet allocation) si può verificare che oltre ad essere molto simili sono apparsi nel corso del tempo in modo omogeneo: non c'è un pattern evidente rispetto agli anni riguardo l'uso del primo o del secondo.
+
+```{r}
+ap_topics <- tidy(ap_lda, matrix = "gamma")
+data<-ap_topics %>% mutate(titolo=document)
+data<-data %>% inner_join(all_data,by="titolo") %>% select(topic, titolo, anno, cantanti, gamma)
+
+p<-ggplot(data,aes(x=anno,y=gamma))+
+  geom_col()+
+  facet_grid(topic~.)
+suppressMessages(ggplotly(p))
+```
+
+
+
+---
+
+
+## Per concludere
+
+Infine una proposta per la generazione del testo per la prossima canzone vincitrice del festival di Sanremo.
+
+Utilizzando la distribuzione degli n-grammi composti da 1 a 3 parole osservata nelle canzoni, si genera una sequenza di parole secondo questa distribuzione.
+La sequenza è costituita da un numero di parole che segue la distribuzione del numero totale di parole delle canzoni analizzate.
+
+Ecco un esempio di testo generato nel modo appena desritto.
+
+```{r}
+unigrams<-all_data %>% mutate(lyrics=removePunctuation(lyrics)) %>%  unnest_tokens(last_word, lyrics,token="ngrams",n=1) %>% count(last_word)
+bigrams<-all_data %>% mutate(lyrics=removePunctuation(lyrics)) %>%  unnest_tokens(word, lyrics,token="ngrams",n=2) %>% separate(word, c("word1", "last_word"), sep = " ") %>% count(word1, last_word, sort = TRUE)
+trigrams<-all_data %>% mutate(lyrics=removePunctuation(lyrics)) %>%  unnest_tokens(word, lyrics,token="ngrams",n=3) %>%  separate(word, c("word1", "word2", "last_word"), sep = " ") %>% count(word1, word2,last_word, sort = TRUE)
+quagrams<-all_data %>% mutate(lyrics=removePunctuation(lyrics)) %>%  unnest_tokens(word, lyrics,token="ngrams",n=4) %>%  separate(word, c("word1", "word2", "word3", "last_word"), sep = " ") %>% count(word1, word2,word3,last_word, sort = TRUE)
+
+
+get_second_word <- function( word1Val){
+  result <- filter_(bigrams, ~word1 == word1Val) %>% sample_n(1, weight = n, replace=T)
+  if(nrow(result) < 1){
+    result <- unigrams
+  }
+  result<- result %>% sample_n(1, weight = n, replace=T) %>% .[["last_word"]]
+  return(result)
+}
+
+get_third_word <- function( word1Val, word2Val){
+  result <- trigrams %>% filter_(~word1 == word1Val, ~word2 == word2Val) 
+  if(nrow(result) < 1){
+    result<-get_second_word(word2Val)
+  }else{
+    result<- result %>% sample_n(1, weight = n, replace=T) %>% .[["last_word"]]
+  }
+  return(result)
+}
+
+get_fourth_word <- function( word1Val, word2Val, word3Val){
+  result <- quagrams %>% filter_(~word1 == word1Val, ~word2 == word2Val, ~word3 == word3Val) 
+  if(nrow(result) < 1){
+    result<-get_third_word(word2Val,word3Val)
+  }else{
+    result<- result %>% sample_n(1, weight = n, replace=T) %>% .[["last_word"]]
+  }
+  return(result)
+}
+
+get_song <- function(word1,sentencelength =5){
+  sentence <- character(sentencelength)
+  sentence[1]<-word1
+  word2<-get_second_word(word1)
+  word3<-get_third_word(word1,word2)
+  sentence[2]<-word2
+  sentence[3]<-word3
+  for(i in seq_len(sentencelength-3)){
+    word <- get_fourth_word( word1, word2, word3)
+    sentence[i+3] <- word
+    word1 <- word2
+    word2 <- word3
+    word3<-word
+  }
+  return(paste(sentence, collapse = " "))
+}
+
+
+set.seed(1234)
+# spezza il testo in singole parole
+song_tokens<-all_data %>%  unnest_tokens(word, lyrics) %>% ungroup()
+
+# considera come gruppo l'anno
+# per ogni anno quante parole totali sono apparse e quante parole diverse sono state usate
+songs_words<-song_tokens %>% group_by(word,anno) %>% summarise(count=n())
+total_words<-getWordsCount(songs_words %>% mutate(songId=anno)) %>% sample_n(1,replace = T) %>% .[["total_words"]]
+word1<-unigrams %>% sample_n(1,weight = n,replace = T) %>% .[["last_word"]]
+lyrics<-get_song(word1,total_words)
+cat(lyrics)
+
+```
